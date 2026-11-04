@@ -133,6 +133,63 @@ Running it in the background for the long term:
 adb -s <SN> shell "nohup /data/local/tmp/cdsp_state --watch --logcat --file /data/local/tmp/cdsp_state.log > /dev/null 2>&1 &"
 ```
 
+## Command reference
+
+`build.sh` rebuilds and re-pushes every time. Once the binary is on the device, you only need to
+rebuild when the source changes, on first deployment, or for a new device. Otherwise run it directly
+through adb. Below, `<SN>` is the device serial and `<NDK>` is the NDK root.
+
+**Build + push**
+
+```
+./build.sh                                          Build + push
+./build.sh run [args]                               Build + push, then run on the device
+./build.sh --ndk <NDK> --serial <SN> run [args]     Specify the NDK and device explicitly
+NDK=<NDK> SERIAL=<SN> ./build.sh run [args]         Same, via environment variables
+NDK_SEARCH="<dir> <dir>" ./build.sh run             Limit where the NDK is searched for
+```
+
+**One-shot queries** (no rebuild needed after the first push)
+
+```
+adb -s <SN> shell /data/local/tmp/cdsp_state                 sleep + clock + dcvs
+adb -s <SN> shell /data/local/tmp/cdsp_state sleep           Sleep state only
+adb -s <SN> shell /data/local/tmp/cdsp_state clock           Clock only
+adb -s <SN> shell /data/local/tmp/cdsp_state dcvs            DCVS clients only
+adb -s <SN> shell /data/local/tmp/cdsp_state sleep dcvs      Any combination
+```
+
+**Monitoring**
+
+```
+adb -s <SN> shell /data/local/tmp/cdsp_state --watch                 Defaults: -i 5 -t 30
+adb -s <SN> shell /data/local/tmp/cdsp_state --watch -i 2 -t 6       Sample every 2 s, alert after 6 s awake
+```
+
+**Output destinations** (append to any command above)
+
+```
+--logcat                                  Write to logcat (tag cdsp_state)
+--file /data/local/tmp/cdsp_state.log     Append to a file on the device
+--logcat --file <PATH>                    Both
+```
+
+**Background run and viewing the records**
+
+```
+adb -s <SN> shell "nohup /data/local/tmp/cdsp_state --watch --logcat --file /data/local/tmp/cdsp_state.log > /dev/null 2>&1 &"
+adb -s <SN> shell cat /data/local/tmp/cdsp_state.log
+adb -s <SN> logcat -d -s cdsp_state
+```
+
+**Verifying the --watch alert**
+
+Keep the CDSP busy with one long-running workload (for example a single `qnn-net-run` with a very
+large `--num_inferences`). Do not restart the process in a loop: each restart leaves a gap in which
+the CDSP can enter LPM, and no alert is raised. In another terminal, run
+`cdsp_state --watch -i 2 -t 6`. Expect `CDSP_NOT_SLEEPING` followed by the clock and DCVS clients;
+after the workload stops, expect `CDSP_SLEEP_RECOVERED`.
+
 ## How data is obtained
 
 | Information | Preferred | Next | Last resort |
