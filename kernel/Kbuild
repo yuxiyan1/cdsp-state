@@ -1,0 +1,4 @@
+# checkstate.ko, build against the device kernel tree:
+#   make -C <KERNEL_OUT> M=$(pwd) modules \
+#        KBUILD_EXTRA_SYMBOLS="<sysmon_subsystem_stats Module.symvers> <cdsprm Module.symvers>"
+obj-m := checkstate.o
