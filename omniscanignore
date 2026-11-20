@@ -1,0 +1,10 @@
+# Build output
+cdsp_state
+
+# Source: Qualcomm original headers
+src/sysmon_subsystem_stats_ioctl.h
+kernel/cdsprm_dcvs_clients_votes.h
+
+# Editor / tool state
+.claude/
+.vscode/

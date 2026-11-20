@@ -1,29 +1,3 @@
-// cdsp_state: query / monitor CDSP sleep state, clock and DCVS clients (HLOS processes)
-//
-// sleep/clock: first the sysmon user-space ioctls (calculator_verify_FR FR5), which this device's sysmon
-// driver does not have (EINVAL); then /dev/checkstate (kernel/checkstate.c), which calls the kernel APIs;
-// without checkstate.ko, debugfs sysmon_subsystem_stats/master_cdsp_stats (root).
-// dcvs: /dev/checkstate when loaded, else debugfs (root) and the cdsprm lines of the kernel log.
-//   sleep : CHECKSTATE_IOC_SLEEP           -> sysmon_stats_query_sleep()
-//   clock : CHECKSTATE_IOC_Q6_VOTES        -> sysmon_stats_query_q6_votes()
-//           CHECKSTATE_IOC_POWER_RESIDENCY -> sysmon_stats_query_power_residency()
-//           CHECKSTATE_IOC_DDR_RESIDENCY   -> sysmon_stats_query_ddr_residency()
-//   dcvs  : CHECKSTATE_IOC_DCVS_CLIENTS    -> cdsprm_sysmon_dcvs_clients_votes()
-//
-// sleep/clock read SMEM and do not wake CDSP. dcvs is an rpmsg round trip that wakes CDSP,
-// so --watch only queries it once CDSP is found not sleeping.
-//
-// Usage:
-//   cdsp_state [sleep] [clock] [dcvs]           one-shot query (default: all), for verification
-//   cdsp_state --watch [-i 5] [-t 30]           long-term monitor: sample LPM every -i s, alert with
-//                                               clock and DCVS clients when CDSP has no LPM entry for -t s
-//   --logcat      also write the output to logcat (tag cdsp_state; alerts at WARN)
-//   --file PATH   also append the output, timestamped, to PATH
-// Output always goes to stdout too. --watch only writes on start and on alerts.
-//
-// Build with the NDK (build.sh):
-//   aarch64-linux-android31-clang++ -std=c++17 -O2 -Wall -static-libstdc++ -Isrc -Ikernel src/cdsp_state.cpp -llog -o cdsp_state
-
 #include <algorithm>
 #include <cerrno>
 #include <cstdarg>
@@ -46,48 +20,45 @@
 
 #include "cdsprm_dcvs_clients_votes.h"
 
-// From sysmon_subsystem_stats.h, which is kernel-only. Must match the device's sysmon driver.
 struct sleep_stats {
 	uint32_t stat_type;
-	uint32_t count;              // number of LPM entries
-	uint64_t last_entered_at;    // arch timer ticks
-	uint64_t last_exited_at;     // arch timer ticks
-	uint64_t accumulated;        // ticks in LPM since boot, incl. an in-progress sleep
+	uint32_t count;
+	uint64_t last_entered_at;
+	uint64_t last_exited_at;
+	uint64_t accumulated;
 };
 
 struct sysmon_smem_q6_event_stats {
-	uint32_t QDSP6_clk;          // Q6 core clock (KHz)
+	uint32_t QDSP6_clk;
 	uint32_t Ab_vote_lsb;
 	uint32_t Ab_vote_msb;
 	uint32_t Ib_vote_lsb;
 	uint32_t Ib_vote_msb;
-	uint32_t Sleep_latency;      // sleep latency vote (us)
-	int32_t HMX_Power_state;     // 1: ON, 0: OFF, -1: not supported
-	int32_t HMX_clk;             // HMX clock (KHz), -1: not supported
+	uint32_t Sleep_latency;
+	int32_t HMX_Power_state;
+	int32_t HMX_clk;
 };
 
 struct sysmon_smem_power_stats {
-	uint32_t version;            // >= 2: current_clk is valid
-	uint32_t clk_arr[32];        // core clock frequency (KHz)
-	uint32_t active_time[32];    // active time (s) per core clock
-	uint32_t pc_time;            // power collapse time (s)
-	uint32_t lpi_time;           // LPI time (s)
+	uint32_t version;
+	uint32_t clk_arr[32];
+	uint32_t active_time[32];
+	uint32_t pc_time;
+	uint32_t lpi_time;
 	uint32_t island_time[32];
-	uint32_t current_clk;        // current core clock (KHz)
+	uint32_t current_clk;
 };
 
 struct sysmon_smem_ddr_stats {
-	uint32_t clk_arr[32];        // DDR clock frequency (KHz)
-	uint32_t active_time[32];    // active time (s) per DDR clock
+	uint32_t clk_arr[32];
+	uint32_t active_time[32];
 	uint32_t num_ddrclk_levels;
-	uint32_t pc_time;            // DSP power collapse time (s)
-	uint32_t curr_clk;           // current DDR clock (KHz)
+	uint32_t pc_time;
+	uint32_t curr_clk;
 };
 
 #include "checkstate_ioctl.h"
 
-// Shipped user-space ioctls of the sysmon driver, as used by calculator_verify_FR (FR5).
-// The header uses the kernel typedef u32 in its ioctl numbers.
 typedef uint32_t u32;
 #include "sysmon_subsystem_stats_ioctl.h"
 
@@ -98,7 +69,7 @@ static const char kCheckstateDev[] = "/dev/checkstate";
 static const char kDebugfsDir[] = "/sys/kernel/debug";
 static const char kDcvsClientsNode[] = "/sys/kernel/debug/compute/dcvs_clients";
 static const char kMasterCdspStats[] = "/sys/kernel/debug/sysmon_subsystem_stats/master_cdsp_stats";
-static const uint64_t kTicksPerMs = 19200;  // arch timer, sysmon_subsystem_stats.c
+static const uint64_t kTicksPerMs = 19200;
 
 static bool g_logcat;
 static FILE *g_file;
@@ -121,7 +92,6 @@ static void vemit(int prio, const char *fmt, va_list ap)
 	}
 }
 
-// Print to stdout, and to logcat / --file when enabled
 __attribute__((format(printf, 1, 2)))
 static void out(const char *fmt, ...)
 {
@@ -132,7 +102,6 @@ static void out(const char *fmt, ...)
 	va_end(ap);
 }
 
-// Same as out(), at WARN in logcat
 __attribute__((format(printf, 1, 2)))
 static void alert(const char *fmt, ...)
 {
@@ -143,7 +112,6 @@ static void alert(const char *fmt, ...)
 	va_end(ap);
 }
 
-// ioctl on /dev/checkstate; prints the error and returns false on failure
 static bool checkstate_ioctl(unsigned long cmd, void *buf, const char *what)
 {
 	int fd = open(kCheckstateDev, O_RDONLY | O_CLOEXEC);
@@ -162,7 +130,6 @@ static bool checkstate_ioctl(unsigned long cmd, void *buf, const char *what)
 	return true;
 }
 
-// ioctl on /dev/sysmon_subsystem_stats, no kernel module needed; false with errno in *err on failure
 static bool sysmon_ioctl(unsigned long cmd, void *buf, int *err)
 {
 	int fd = open(SUBSYSTEMSTATS_DEVICE_NAME, O_RDONLY | O_CLOEXEC);
@@ -179,7 +146,6 @@ static void sysmon_failed(const char *what, int err)
 	out("%s: %s failed: %s\n", what, SUBSYSTEMSTATS_DEVICE_NAME, strerror(err));
 }
 
-// Mount debugfs if needed; prints the error and returns false on failure
 static bool mount_debugfs()
 {
 	if (mount("none", kDebugfsDir, "debugfs", 0, nullptr) < 0 && errno != EBUSY) {
@@ -189,7 +155,6 @@ static bool mount_debugfs()
 	return true;
 }
 
-// The sysmon driver's own dump of the sleep, clock and DDR stats
 static bool read_master_cdsp_stats(std::string *text)
 {
 	char buf[512];
@@ -209,7 +174,6 @@ static bool read_master_cdsp_stats(std::string *text)
 	return true;
 }
 
-// Number after the "=" of a "<key> = <number>" line of master_cdsp_stats
 static bool stats_value(const std::string &text, const char *key, uint64_t *v)
 {
 	size_t p = text.find(key);
@@ -223,14 +187,11 @@ static bool stats_value(const std::string &text, const char *key, uint64_t *v)
 	return true;
 }
 
-// ---------------------------------------------------------------------------
-// sleep
-
 struct SleepState {
 	bool in_lpm;
 	uint32_t count;
-	uint64_t last_entered_at;  // arch timer ticks
-	uint64_t last_exited_at;   // arch timer ticks
+	uint64_t last_entered_at;
+	uint64_t last_exited_at;
 	uint64_t accumulated_ms;
 };
 
@@ -250,7 +211,6 @@ static bool query_sleep(SleepState *s)
 			return false;
 		}
 	} else {
-		// no ioctl and no checkstate.ko: the LPM stats of master_cdsp_stats
 		std::string t;
 		uint64_t count = 0;
 
@@ -270,7 +230,7 @@ static bool query_sleep(SleepState *s)
 	s->count = l.count;
 	s->last_entered_at = l.last_entered_at;
 	s->last_exited_at = l.last_exited_at;
-	// accumulated already includes an in-progress sleep
+
 	s->accumulated_ms = l.accumulated / kTicksPerMs;
 	return true;
 }
@@ -288,10 +248,6 @@ static bool report_sleep()
 	return true;
 }
 
-// ---------------------------------------------------------------------------
-// clock
-
-// master_cdsp_stats already lists the clock, votes, residency and DDR stats: print it, blank lines dropped
 static bool report_clock_debugfs()
 {
 	std::string t;
@@ -362,7 +318,6 @@ static bool report_clock()
 		ok = false;
 	}
 
-	// the sysmon driver has no DDR ioctl, only checkstate.ko provides it
 	if (access(kCheckstateDev, F_OK) == 0) {
 		if (checkstate_ioctl(CHECKSTATE_IOC_DDR_RESIDENCY, &d, "CDSP DDR residency")) {
 			unsigned n = std::min<unsigned>(d.num_ddrclk_levels, std::size(d.clk_arr));
@@ -377,9 +332,6 @@ static bool report_clock()
 	return ok;
 }
 
-// ---------------------------------------------------------------------------
-// DCVS clients
-
 static std::string read_proc(const std::string &path)
 {
 	char buf[256];
@@ -389,14 +341,13 @@ static std::string read_proc(const std::string &path)
 		return "";
 	size_t n = fread(buf, 1, sizeof(buf), f);
 	fclose(f);
-	std::replace(buf, buf + n, '\0', ' ');  // cmdline args are NUL separated
+	std::replace(buf, buf + n, '\0', ' ');
 	std::string s(buf, n);
 	while (!s.empty() && (s.back() == ' ' || s.back() == '\n'))
 		s.pop_back();
 	return s;
 }
 
-// HLOS process/thread behind a DCVS client, from its hlos_pid/hlos_tid
 static std::string hlos_process(unsigned pid, unsigned tid)
 {
 	if (!pid)
@@ -415,21 +366,19 @@ static std::string hlos_process(unsigned pid, unsigned tid)
 	return name;
 }
 
-// Whole kernel log, not cleared (like dmesg)
 static std::string read_klog()
 {
-	int size = klogctl(10 /* SYSLOG_ACTION_SIZE_BUFFER */, nullptr, 0);
+	int size = klogctl(10 , nullptr, 0);
 
 	if (size <= 0)
 		return "";
 	std::string buf(size, '\0');
-	int n = klogctl(3 /* SYSLOG_ACTION_READ_ALL */, &buf[0], size);
+	int n = klogctl(3 , &buf[0], size);
 
 	buf.resize(n > 0 ? n : 0);
 	return buf;
 }
 
-// cdsprm lines of a kernel log, one per element
 static std::vector<std::string> cdsprm_lines(const std::string &klog)
 {
 	std::vector<std::string> v;
@@ -447,12 +396,9 @@ static std::vector<std::string> cdsprm_lines(const std::string &klog)
 	return v;
 }
 
-// Same as: setprop vendor.fastrpc.process.attrs 0x2000; mount -t debugfs none /sys/kernel/debug;
-//          cat /sys/kernel/debug/compute/dcvs_clients; dmesg | grep cdsprm
-// Needs root and a build that allows debugfs. Prints the cdsprm lines the read added to the kernel log.
 static bool report_dcvs_debugfs()
 {
-	__system_property_set("vendor.fastrpc.process.attrs", "0x2000");  // show lib names
+	__system_property_set("vendor.fastrpc.process.attrs", "0x2000");
 	if (!mount_debugfs())
 		return false;
 
@@ -464,10 +410,9 @@ static bool report_dcvs_debugfs()
 	}
 	char tmp[64];
 	while (read(fd, tmp, sizeof(tmp)) > 0)
-		;  // the read triggers the query, the result goes to the kernel log
+		;
 	close(fd);
 
-	// lines after the last one seen before the read (the kernel log is not cleared)
 	std::vector<std::string> after = cdsprm_lines(read_klog());
 	size_t start = 0;
 	if (!before.empty()) {
@@ -486,7 +431,6 @@ static bool report_dcvs_debugfs()
 
 static bool report_dcvs()
 {
-	// no checkstate.ko: fall back to debugfs
 	if (access(kCheckstateDev, F_OK) < 0 && errno == ENOENT)
 		return report_dcvs_debugfs();
 
@@ -529,14 +473,10 @@ static bool report_dcvs()
 	return true;
 }
 
-// ---------------------------------------------------------------------------
-// monitor
-
 static int64_t boottime_ms()
 {
 	timespec ts;
 
-	// boottime: a CDSP that stays awake across HLOS suspend is caught on resume
 	clock_gettime(CLOCK_BOOTTIME, &ts);
 	return ts.tv_sec * 1000LL + ts.tv_nsec / 1000000;
 }
@@ -577,14 +517,12 @@ static int watch(unsigned interval_s, unsigned threshold_s)
 			prev = s;
 			prev_t = now;
 		} else if (!have_prev) {
-			return 1;  // never got a sample, e.g. checkstate.ko not loaded
+			return 1;
 		}
 		fflush(stdout);
 		sleep(interval_s);
 	}
 }
-
-// ---------------------------------------------------------------------------
 
 static void usage(const char *prog)
 {
@@ -621,7 +559,7 @@ int main(int argc, char **argv)
 				fprintf(stderr, "open %s failed: %s\n", argv[i], strerror(errno));
 				return 1;
 			}
-			setvbuf(g_file, nullptr, _IOLBF, 0);  // a killed monitor keeps what it wrote
+			setvbuf(g_file, nullptr, _IOLBF, 0);
 		} else {
 			usage(argv[0]);
 			return 2;

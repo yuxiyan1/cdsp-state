@@ -15,11 +15,9 @@ HLOS_state/
 ├── src/
 │   ├── cdsp_state.cpp               User-space program
 │   └── sysmon_subsystem_stats_ioctl.h   User-space ioctl definitions for the sysmon driver
-└── kernel/                          Kernel-module option checkstate.ko (unused for now, see "How data is obtained")
-    ├── checkstate.c, Kbuild
-    ├── checkstate_ioctl.h           ioctl definitions shared by the kernel and user space
-    ├── cdsprm_dcvs_clients_votes.h
-    └── sysmon_subsystem_stats.c/.h  Reference copies of the original files
+└── kernel/                          Headers for the /dev/checkstate path (see "How data is obtained")
+    ├── checkstate_ioctl.h           /dev/checkstate ioctl numbers
+    └── cdsprm_dcvs_clients_votes.h  DCVS client structs returned by /dev/checkstate
 ```
 
 ## Build and push: build.sh
@@ -194,7 +192,7 @@ after the workload stops, expect `CDSP_SLEEP_RECOVERED`.
 
 | Information | Preferred | Next | Last resort |
 |---|---|---|---|
-| sleep, clock | User-space ioctls on `/dev/sysmon_subsystem_stats` (sleep, Q6 votes, power residency) | `/dev/checkstate` (`kernel/checkstate.ko` calling the kernel APIs), when present | debugfs `sysmon_subsystem_stats/master_cdsp_stats` |
+| sleep, clock | User-space ioctls on `/dev/sysmon_subsystem_stats` (sleep, Q6 votes, power residency) | `/dev/checkstate` (a checkstate.ko kernel module calling the kernel APIs), when present | debugfs `sysmon_subsystem_stats/master_cdsp_stats` |
 | dcvs | `/dev/checkstate`, when present | debugfs `compute/dcvs_clients`, then reading the new `cdsprm` lines from the kernel log | — |
 
 On the device tested so far (canoe):
